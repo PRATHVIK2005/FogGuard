@@ -1,53 +1,64 @@
-# FogGuard Dataset Schema
-Owner: Prathvik (fog/feature_extraction) | Consumer: Pavan (ml/mbnn, ml/lstm)
-Status: DRAFT — confirm with Pavan before training starts
+# FogGuard Dataset Schema (v2)
+Owner: Prathvik (fog: capture, extraction, Stage A/A.5/D) | Pavan (ml: MBAE, DBSCAN, IForest, LSTM)
+Status: CONFIRMED
 
-## Feature Vector (per 10-second window, per device)
+## 1. Raw Feature Vector (fog/feature_extraction/extractor.py output)
+Per 10-second window, per source device.
 
-| # | Feature Name | Type | Range/Format | Description |
-|---|---|---|---|---|
-| 1 | fc_distribution | vector[8] | float[0-1], sums to 1 | Normalized frequency of each Modbus function code (FC01,02,03,04,05,06,15,16) seen in window |
-| 2 | register_pattern | vector[16] | float[0-1] | Normalized access frequency across register address buckets (bucketed in 16 ranges) |
-| 3 | packet_size_mean | float | bytes | Mean packet size in window |
-| 4 | packet_size_std | float | bytes | Std deviation of packet size (captures burstiness) |
-| 5 | inter_arrival_mean | float | seconds | Mean time between packets |
-| 6 | inter_arrival_std | float | seconds | Std deviation of inter-arrival time |
-| 7 | session_freq | int | count | Number of distinct connections/sessions in window |
-| 8 | byte_rate | float | bytes/sec | Total bytes transferred / window duration |
-| 9 | req_resp_ratio | float | ratio | Requests sent / responses received |
-| 10 | connection_duration | float | seconds | Duration of active TCP session in window |
+| # | Feature | Type | Description |
+|---|---|---|---|
+| 1 | fc_0..fc_7 | float[8] | Normalized Modbus function code distribution |
+| 2 | reg_0..reg_15 | float[16] | Normalized register address access pattern |
+| 3 | packet_size_mean | float | Mean packet size (bytes) |
+| 4 | packet_size_std | float | Std dev of packet size |
+| 5 | inter_arrival_mean | float | Mean time between packets (s) |
+| 6 | inter_arrival_std | float | Std dev of inter-arrival time |
+| 7 | session_freq | int | Distinct connections/sessions in window |
+| 8 | byte_rate | float | Bytes/sec |
+| 9 | req_resp_ratio | float | Requests / responses |
+| 10 | connection_duration | float | Active session duration (s) |
 
-## Metadata (attached to every row, not fed to model directly)
+## 2. Ground Truth Labels (evaluation only, never fed into MBAE training)
+| Field | Type | Values |
+|---|---|---|
+| device_label | string | conveyor_belt \| cctv \| robotic_arm \| cooling_system \| rogue_impersonator |
+| attack_label | int | 0=Normal, 1=MAC Spoof, 2=Unauthorized Write, 3=Fake Slave Impersonation |
+| safety_critical | bool | True only for cooling_system |
+
+## 3. MBAE Output (fog-side inference)
 | Field | Type | Description |
 |---|---|---|
-| timestamp | ISO8601 string | Window start time |
-| src_ip | string | Source IP |
-| src_mac | string | Source MAC |
-| window_id | string | Unique ID for this feature window |
+| encoding | float[24] | Concatenated latent vectors from 3 branches |
+| recon_error | float | Sum of per-branch reconstruction MSE |
 
-## Label Schema (for MBNN — device identity)
-| Label | Device Type |
-|---|---|
-| 0 | CCTV |
-| 1 | Robotic Arm |
-| 2 | Conveyor Belt |
-| 3 | Cooling System |
-| -1 | UNKNOWN (open-set / untrained device — MBNN confidence below threshold) |
+## 4. DBSCAN Inventory Output
+| Field | Type | Description |
+|---|---|---|
+| cluster_id | int | -1 = noise = potential novel device |
 
-## Attack Label Schema (for evaluation / RF baseline, not MBNN input)
-| Label | Meaning |
-|---|---|
-| 0 | Normal |
-| 1 | MAC Spoof |
-| 2 | Unauthorized Write (FC06/16) |
-| 3 | Fake Slave Impersonation |
+## 5. Cloud Isolation Forest Output
+| Field | Type | Description |
+|---|---|---|
+| iforest_anomaly | bool | True if flagged anomalous |
+| iforest_score | float | Raw anomaly score |
 
-## File Format
-- Stored as: `dataset/processed/features_<date>.csv` (or `.parquet` if volume gets large)
-- One row = one (device, window) pair
-- Columns: [metadata fields] + [feature 1-10] + [device_label] + [attack_label]
+## 6. Cloud LSTM Output
+| Field | Type | Description |
+|---|---|---|
+| lstm_recon_error | float | Sequence reconstruction error |
+| lstm_flag | bool | True if exceeds threshold |
 
-## Open Questions for Pavan (confirm before training)
-- [ ] Is vector[8]/vector[16] flattened into separate columns (fc_0, fc_1...) or stored as a single JSON/array column? — **Recommend flattened columns, simpler for sklearn/pandas**
-- [ ] Does MBNN want raw features or normalized/scaled? — Recommend I hand off raw, Pavan scales in his pipeline (keeps my extractor simpler and reusable for RF baseline too)
-- [ ] Confirm the -1 UNKNOWN label threshold logic sits in Pavan's model output, not my extractor (extractor only produces features, not predictions)
+## 7. Final Verdict
+| Verdict | Meaning | Triggers |
+|---|---|---|
+| Normal | No anomaly signal | No action |
+| Suspicious | One of IForest/LSTM flags | Quarantine |
+| Critical | Both flag, or Stage A/A.5 + behavioral confirm | Stage D escalation |
+
+## 8. Confirmed Architecture Decisions
+- [x] MBAE = genuine autoencoder, unsupervised, trains on normal traffic only
+- [x] Isolation Forest runs at CLOUD layer (matches official FR3/FR5)
+- [x] Hardware interlock (FC05/FC06) EXCLUDES safety-critical devices — alert only
+- [x] ARP/OUI/Auth (Stage A/A.5) run at fog layer, always active, zero cloud dependency
+- [x] Attack source = real Kali, containerized on fogguard_net (Option B, practical version)
+- [ ] "Yang et al." citation — needs verification before use in report/paper

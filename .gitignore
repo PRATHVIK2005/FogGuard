@@ -6,6 +6,7 @@ venv/
 
 # Data — too large for git
 dataset/raw/
+dataset/cleaned/
 dataset/processed/
 *.pcap
 
@@ -15,6 +16,11 @@ ml/saved_models/*.pkl
 
 # Node
 node_modules/
+cloud/frontend/build/
+cloud/frontend/.env
 
 # OS
 .DS_Store
+
+# Ledger (local test artifact)
+quarantine_ledger.jsonl
